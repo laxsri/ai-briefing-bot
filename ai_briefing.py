@@ -2,31 +2,30 @@ import os
 import requests
 import feedparser
 from datetime import datetime
-from openai import OpenAI
+from groq import Groq  # need to install groq
 
 print("Starting...")
 
 # Secrets
-api_key = os.environ.get("DEEPSEEK_API_KEY")
+groq_api_key = os.environ.get("GROQ_API_KEY")
 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
 chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
-if not api_key:
-    raise Exception("Missing DEEPSEEK_API_KEY")
+if not groq_api_key:
+    raise Exception("Missing GROQ_API_KEY")
 if not bot_token:
     raise Exception("Missing TELEGRAM_BOT_TOKEN")
 if not chat_id:
     raise Exception("Missing TELEGRAM_CHAT_ID")
 
-client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+client = Groq(api_key=groq_api_key)
 
-# RSS
+# RSS (same as before)
 feeds = [
     "https://openai.com/blog/rss.xml",
     "https://www.anthropic.com/news/rss.xml",
     "https://techcrunch.com/tag/artificial-intelligence/feed/"
 ]
-
 articles = []
 for url in feeds:
     try:
@@ -35,7 +34,6 @@ for url in feeds:
             articles.append(f"- {e.title} ({e.link})")
     except:
         pass
-
 news_text = "\n".join(articles) if articles else "No news fetched."
 
 # GitHub
@@ -46,15 +44,14 @@ trending_text = ""
 for idx, repo in enumerate(repos, 1):
     trending_text += f"{idx}. [{repo['full_name']}]({repo['html_url']}) – {repo.get('description', '')} – ⭐ {repo['stargazers_count']}\n"
 
-# Build prompt (classic string concatenation, no f‑string issues)
-prompt = """
-Today is """ + datetime.now().strftime('%Y-%m-%d') + """.
+prompt = f"""
+Today is {datetime.now().strftime('%Y-%m-%d')}.
 
 Here are the latest AI news headlines:
-""" + news_text + """
+{news_text}
 
 Top 3 trending AI GitHub repos:
-""" + trending_text + """
+{trending_text}
 
 Your task: Write a daily "AI Intelligence Briefing" with four sections:
 1. Latest AI Industry News – measurable claims, regulations, launches.
@@ -65,9 +62,9 @@ Your task: Write a daily "AI Intelligence Briefing" with four sections:
 Be professional, concise, objective. Skip hype words. Only include items with evidence.
 """
 
-# Call DeepSeek
+# Call Groq (free model: llama-3.3-70b-versatile)
 response = client.chat.completions.create(
-    model="deepseek-chat",
+    model="llama-3.3-70b-versatile",
     messages=[
         {"role": "system", "content": "You are a fact‑based AI analyst."},
         {"role": "user", "content": prompt}
