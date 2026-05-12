@@ -31,7 +31,8 @@ for url in feeds:
     try:
         f = feedparser.parse(url)
         for e in f.entries[:5]:
-            articles.append(f"- {e.title} ({e.link})")
+            # Create a markdown link: [Title](URL)
+            articles.append(f"- [{e.title}]({e.link})")
     except:
         pass
 news_text = "\n".join(articles) if articles else "No news fetched."
@@ -47,19 +48,23 @@ for idx, repo in enumerate(repos, 1):
 prompt = f"""
 Today is {datetime.now().strftime('%Y-%m-%d')}.
 
-Here are the latest AI news headlines:
+Here are the latest AI news headlines with links:
 {news_text}
 
 Top 3 trending AI GitHub repos:
 {trending_text}
 
 Your task: Write a daily "AI Intelligence Briefing" with four sections:
-1. Latest AI Industry News – measurable claims, regulations, launches.
-2. Agentic AI & Use Cases – real deployments, no hype.
-3. Newer Offerings / Apps – new tools.
-4. GitHub Trending – a table with repo name, description, stars.
+1. Latest AI Industry News – For each news item, write a 1‑sentence summary and include the original link. Use markdown format: [Headline](URL). Do not omit any link.
+2. Agentic AI & Use Cases – Same rule: include source links if available.
+3. Newer Offerings / Apps – Include links to launch announcements.
+4. GitHub Trending – A table with columns: Repository | Description | Stars | URL (make the repo name a clickable link).
 
-Be professional, concise, objective. Skip hype words. Only include items with evidence.
+Rules:
+- Be professional, concise, objective.
+- Skip hype words.
+- Every claim must be traceable via the provided link.
+- If a link is not available for a specific item, write "No link available".
 """
 
 # Call Groq (free model: llama-3.3-70b-versatile)
