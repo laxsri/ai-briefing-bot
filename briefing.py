@@ -2,56 +2,31 @@ import os
 import requests
 import feedparser
 from datetime import datetime
-import openai
+from openai import OpenAI  # Keep this import, we'll just use it differently
 
 # ------------------------------------------------------------
-# CONFIGURATION – these values will come from GitHub Secrets
+# CONFIGURATION – using DeepSeek
 # ------------------------------------------------------------
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+# Change the line that gets your API key to use the new secret name
+DEEPSEEK_API_KEY = os.environ["DEEPSEEK_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-openai.api_key = OPENAI_API_KEY
+# --- The only significant change ---
+# Initialize the OpenAI client, but point it to DeepSeek's base URL
+# and use your DeepSeek API key.
+client = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com/v1"  # DeepSeek's OpenAI-compatible endpoint
+)
+# ------------------------------------
 
 # ------------------------------------------------------------
-# 1. FETCH RSS NEWS (AI industry & agentic AI)
+# ... (The rest of the script for fetching RSS and GitHub data remains exactly the same) ...
 # ------------------------------------------------------------
-rss_feeds = [
-    "https://openai.com/blog/rss.xml",
-    "https://www.anthropic.com/news/rss.xml",
-    "https://techcrunch.com/tag/artificial-intelligence/feed/"
-]
-
-all_articles = []
-for feed_url in rss_feeds:
-    feed = feedparser.parse(feed_url)
-    for entry in feed.entries[:5]:   # take max 5 per feed
-        all_articles.append({
-            "title": entry.title,
-            "link": entry.link,
-            "summary": entry.get("summary", "")[:300]
-        })
 
 # ------------------------------------------------------------
-# 2. FETCH TOP 3 TRENDING AI GITHUB REPOS (last 24h)
-# ------------------------------------------------------------
-github_url = "https://api.github.com/search/repositories?q=ai+agent+llm&sort=stars&order=desc&per_page=3"
-headers = {"Accept": "application/vnd.github.v3+json"}
-response = requests.get(github_url, headers=headers)
-repos = response.json().get("items", [])
-
-trending = []
-for repo in repos:
-    trending.append({
-        "name": repo["full_name"],
-        "url": repo["html_url"],
-        "description": repo["description"] or "",
-        "stars": repo["stargazers_count"],
-        "today_gain": repo.get("stargazers_count", 0)  # note: real 24h gain requires extra API call; for a novice, showing total stars is simpler
-    })
-
-# ------------------------------------------------------------
-# 3. BUILD THE PROMPT FOR OPENAI (high‑signal filter)
+# 3. BUILD THE PROMPT FOR DEEPSEEK (using the same prompt logic)
 # ------------------------------------------------------------
 prompt = f"""
 Today is {datetime.now().strftime('%Y-%m-%d')}.
@@ -72,10 +47,10 @@ Style: professional, objective, bullet points. Remove marketing fluff ("revoluti
 """
 
 # ------------------------------------------------------------
-# 4. CALL OPENAI TO GENERATE THE BRIEFING
+# 4. CALL DEEPSEEK (via the OpenAI client library)
 # ------------------------------------------------------------
-response = openai.ChatCompletion.create(
-    model="gpt-3.5-turbo",   # cheapest, works well for summarisation
+response = client.chat.completions.create(
+    model="deepseek-chat",  # This is DeepSeek's latest V3 model
     messages=[
         {"role": "system", "content": "You are a cautious, fact‑based AI research analyst."},
         {"role": "user", "content": prompt}
@@ -86,15 +61,6 @@ response = openai.ChatCompletion.create(
 briefing_text = response.choices[0].message.content
 
 # ------------------------------------------------------------
-# 5. SEND TO TELEGRAM (or Discord – see alternative below)
+# 5. SEND TO TELEGRAM (This part remains unchanged)
 # ------------------------------------------------------------
-def send_to_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    requests.post(url, json=payload)
-
-send_to_telegram(f"📡 *AI Intelligence Briefing – {datetime.now().strftime('%Y-%m-%d')}*\n\n{briefing_text}")
+# ... (keep your existing send_to_telegram function here) ...
