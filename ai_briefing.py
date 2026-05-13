@@ -2,7 +2,7 @@ import os
 import requests
 import feedparser
 from datetime import datetime
-from groq import Groq  # need to install groq
+from groq import Groq
 
 print("Starting...")
 
@@ -20,11 +20,67 @@ if not chat_id:
 
 client = Groq(api_key=groq_api_key)
 
-# RSS (same as before)
+# ── Telegram helper: split & send ──────────────────────────────────────
+TELEGRAM_MAX = 4096  # Telegram's hard character limit per message
+
+
+def split_message(text, max_len=TELEGRAM_MAX):
+    """Split text into chunks that fit Telegram's limit.
+    Tries to break at paragraph boundaries first, then line boundaries,
+    then hard-cuts as a last resort."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+
+        # Try to split at a double-newline (paragraph break)
+        cut = text.rfind("\n\n", 0, max_len)
+        if cut == -1:
+            # Fall back to single newline
+            cut = text.rfind("\n", 0, max_len)
+        if cut == -1:
+            # Last resort: hard cut
+            cut = max_len
+
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+
+    return chunks
+
+
+def send_telegram(text, parse_mode="Markdown"):
+    """Send a message to Telegram, automatically splitting if too long."""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    chunks = split_message(text)
+
+    for i, chunk in enumerate(chunks, 1):
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": parse_mode,
+        }
+        r = requests.post(url, json=payload)
+        if r.status_code != 200:
+            # If Markdown parsing fails, retry without formatting
+            payload["parse_mode"] = None
+            r = requests.post(url, json=payload)
+            if r.status_code != 200:
+                raise Exception(
+                    f"Telegram error on chunk {i}/{len(chunks)}: {r.text}"
+                )
+    print(f"  Sent {len(chunks)} message(s) to Telegram.")
+
+
+# ── RSS feeds ──────────────────────────────────────────────────────────
+# NOTE: fixed the missing comma between TechCrunch and OpenAI URLs
 feeds = [
     "https://openai.com/blog/rss.xml",
     "https://www.anthropic.com/news/rss.xml",
-    "https://techcrunch.com/tag/artificial-intelligence/feed/"
+    "https://techcrunch.com/tag/artificial-intelligence/feed/",  # ← comma was missing
     "https://openai.com/news/rss.xml",
     "https://www.anthropic.com/rss.xml",
     "https://deepmind.google/blog/rss.xml",
@@ -59,27 +115,46 @@ feeds = [
     "https://www.reddit.com/r/MachineLearning/.rss",
     "https://www.reddit.com/r/LocalLLaMA/.rss",
     "https://www.marktechpost.com/feed/",
-   
 ]
+
+MAX_PER_FEED = 3  # keep the briefing manageable
+MAX_TOTAL = 60    # hard cap on total articles sent to the LLM
+
 articles = []
 for url in feeds:
     try:
         f = feedparser.parse(url)
-        for e in f.entries[:5]:
-            # Create a markdown link: [Title](URL)
+        for e in f.entries[:MAX_PER_FEED]:
             articles.append(f"- [{e.title}]({e.link})")
-    except:
-        pass
+    except Exception as exc:
+        print(f"  ⚠ Feed failed: {url} — {exc}")
+
+# Cap total to avoid blowing up the LLM context / output
+articles = articles[:MAX_TOTAL]
 news_text = "\n".join(articles) if articles else "No news fetched."
 
-# GitHub
-gh_url = "https://api.github.com/search/repositories?q=ai+agent+llm&sort=stars&order=desc&per_page=3"
-resp = requests.get(gh_url, headers={"Accept": "application/vnd.github.v3+json"})
-repos = resp.json().get("items", [])
+# ── GitHub trending ────────────────────────────────────────────────────
+gh_url = (
+    "https://api.github.com/search/repositories"
+    "?q=ai+agent+llm&sort=stars&order=desc&per_page=3"
+)
 trending_text = ""
-for idx, repo in enumerate(repos, 1):
-    trending_text += f"{idx}. [{repo['full_name']}]({repo['html_url']}) – {repo.get('description', '')} – ⭐ {repo['stargazers_count']}\n"
+try:
+    resp = requests.get(
+        gh_url, headers={"Accept": "application/vnd.github.v3+json"}, timeout=15
+    )
+    resp.raise_for_status()
+    repos = resp.json().get("items", [])
+    for idx, repo in enumerate(repos, 1):
+        trending_text += (
+            f"{idx}. [{repo['full_name']}]({repo['html_url']}) "
+            f"– {repo.get('description', '')} – ⭐ {repo['stargazers_count']}\n"
+        )
+except Exception as exc:
+    print(f"  ⚠ GitHub API error: {exc}")
+    trending_text = "GitHub data unavailable.\n"
 
+# ── LLM prompt ─────────────────────────────────────────────────────────
 prompt = f"""
 Today is {datetime.now().strftime('%Y-%m-%d')}.
 
@@ -90,38 +165,37 @@ Top 3 trending AI GitHub repos:
 {trending_text}
 
 Your task: Write a daily "AI Intelligence Briefing" with four sections:
-1. Latest AI Industry News – For each news item, write a 1‑sentence summary and include the original link. Use markdown format: [Headline](URL). Do not omit any link.
-2. Agentic AI & Use Cases – Same rule: include source links if available.
+1. Latest AI Industry News – For each news item, write a 1‑sentence summary
+   and include the original link. Use markdown: [Headline](URL).
+2. Agentic AI & Use Cases – Include source links if available.
 3. Newer Offerings / Apps – Include links to launch announcements.
-4. GitHub Trending – A table with columns: Repository | Description | Stars | URL (make the repo name a clickable link).
+4. GitHub Trending – A table: Repository | Description | Stars | URL
+   (make the repo name a clickable link).
 
 Rules:
 - Be professional, concise, objective.
 - Skip hype words.
 - Every claim must be traceable via the provided link.
-- If a link is not available for a specific item, write "No link available".
+- If a link is not available, write "No link available".
+- Keep the TOTAL output under 3500 characters so it fits a single
+  Telegram message when possible.
 """
 
-# Call Groq (free model: llama-3.3-70b-versatile)
 response = client.chat.completions.create(
     model="llama-3.3-70b-versatile",
     messages=[
         {"role": "system", "content": "You are a fact‑based AI analyst."},
-        {"role": "user", "content": prompt}
+        {"role": "user", "content": prompt},
     ],
-    temperature=0.3
+    temperature=0.3,
 )
 briefing = response.choices[0].message.content
 
-# Send to Telegram
-url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-payload = {
-    "chat_id": chat_id,
-    "text": f"📡 *AI Intelligence Briefing – {datetime.now().strftime('%Y-%m-%d')}*\n\n{briefing}",
-    "parse_mode": "Markdown"
-}
-r = requests.post(url, json=payload)
-if r.status_code != 200:
-    raise Exception(f"Telegram error: {r.text}")
+# ── Send ───────────────────────────────────────────────────────────────
+header = (
+    f"📡 *AI Intelligence Briefing – "
+    f"{datetime.now().strftime('%Y-%m-%d')}*\n\n"
+)
+send_telegram(header + briefing)
 
 print("✅ Done")
